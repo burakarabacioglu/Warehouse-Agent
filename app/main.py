@@ -41,9 +41,6 @@ def get_db():
         db.close()
 
 
-# ---------------------------------------------------------------------------
-# App lifecycle
-# ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🌱 Agri-Flow starting up — creating tables if needed...")
@@ -60,9 +57,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ---------------------------------------------------------------------------
-# Helper: upsert product and log transaction
-# ---------------------------------------------------------------------------
+
 def process_inventory_action(
     db: Session,
     product_name: str,
@@ -116,3 +111,123 @@ def process_inventory_action(
         "unit": product.unit,
         "quantity_change": quantity_change,
     }
+
+
+@app.post("/webhook/whatsapp", response_class=PlainTextResponse)
+async def whatsapp_webhook(
+    Body: str = Form(...),
+    From: str = Form("unknown"),
+    db: Session = Depends(get_db),
+):
+    """
+    Twilio WhatsApp webhook.
+    Receives a voice-note transcript (Body) and sender (From),
+    processes it through Gemini, and updates inventory.
+
+    Returns a TwiML-compatible plain-text response that Twilio can forward
+    back to the user as a WhatsApp message.
+    """
+    transcript = Body.strip()
+    logger.info(f"Received from {From}: {transcript[:120]}")
+
+    if not transcript:
+        return PlainTextResponse("⚠️ Empty message received. Please send a voice note or text.", status_code=200)
+
+    # --- AI extraction ---
+    try:
+        extracted = extract_inventory_action(transcript)
+    except ValueError as e:
+        logger.warning(f"Extraction failed: {e}")
+        return (
+            "⚠️ Could not understand the inventory action. "
+            "Please try again. Example: '50 bags of wheat received today.'"
+        )
+    except RuntimeError as e:
+        logger.error(f"AI service error: {e}")
+        raise HTTPException(status_code=503, detail="AI service temporarily unavailable")
+
+    # --- DB upsert ---
+    try:
+        result = process_inventory_action(
+            db=db,
+            product_name=extracted["product_name"],
+            quantity_change=extracted["quantity_change"],
+            unit=extracted["unit"],
+            transcript=transcript,
+            from_number=From,
+        )
+    except Exception as e:
+        logger.error(f"Database error: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Database error while saving inventory")
+
+    # --- Build human-friendly reply ---
+    direction = "➕ Added" if result["quantity_change"] >= 0 else "➖ Removed"
+    abs_change = abs(result["quantity_change"])
+
+    reply = (
+        f"✅ Inventory updated!\n"
+        f"{direction} {abs_change} {result['unit']} of {result['product_name'].title()}.\n"
+        f"📦 New stock: {result['new_quantity']} {result['unit']}"
+    )
+
+    return reply
+
+
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "service": "Agri-Flow"}
+
+
+@app.get("/inventory")
+def get_inventory(db: Session = Depends(get_db)):
+    """Return all current product stock levels."""
+    products = db.query(Product).order_by(Product.name).all()
+    return [
+        {
+            "id": p.id,
+            "name": p.name,
+            "quantity": p.quantity,
+            "unit": p.unit,
+            "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+        }
+        for p in products
+    ]
+
+
+@app.get("/inventory/{product_name}")
+def get_product(product_name: str, db: Session = Depends(get_db)):
+    """Get a specific product by name."""
+    product = db.query(Product).filter(Product.name == product_name.lower()).first()
+    if not product:
+        raise HTTPException(status_code=404, detail=f"Product '{product_name}' not found")
+    return {
+        "id": product.id,
+        "name": product.name,
+        "quantity": product.quantity,
+        "unit": product.unit,
+        "updated_at": product.updated_at.isoformat() if product.updated_at else None,
+    }
+
+
+@app.get("/logs")
+def get_logs(limit: int = 20, db: Session = Depends(get_db)):
+    """Return the most recent transaction logs."""
+    logs = (
+        db.query(TransactionLog)
+        .order_by(TransactionLog.timestamp.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": log.id,
+            "product_id": log.product_id,
+            "quantity_change": log.quantity_change,
+            "from_number": log.from_number,
+            "original_transcript": log.original_transcript,
+            "timestamp": log.timestamp.isoformat(),
+        }
+        for log in logs
+    ]
