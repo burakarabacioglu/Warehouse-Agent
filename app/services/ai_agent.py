@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 # Configure Gemini once at import time
 genai.configure(api_key=settings.GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+model = genai.GenerativeModel("gemini-flash-latest")
 
 SYSTEM_PROMPT = """
 You are an inventory management assistant for an agricultural business called Agri-Flow.
@@ -81,37 +81,34 @@ def validate_extraction(data: dict) -> dict:
     return data
 
 
-def extract_inventory_action(transcript: str) -> dict:
-    """
-    Send transcript to Gemini and extract structured inventory action.
-    Returns dict with: product_name, quantity_change, unit
-    Raises ValueError if extraction fails.
-    """
-    if not transcript or not transcript.strip():
-        raise ValueError("Empty transcript provided")
-
-    prompt = f"{SYSTEM_PROMPT}\n\nTranscript: \"{transcript.strip()}\""
-
-    logger.info(f"Sending transcript to Gemini: {transcript[:100]}...")
+def extract_inventory_action(transcript: str):
+    # Use a highly structured prompt to keep the AI focused
+    prompt = f"JSON ONLY: '{transcript}'. Schema: {{'product_name': str, 'quantity_change': float, 'unit': str}}"
 
     try:
+        # 2. Add generation_config to prevent cut-offs
         response = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
-                temperature=0.1,  # Low temp for deterministic JSON output
-                max_output_tokens=256,  # JSON is small; cap tokens
-            ),
+                candidate_count=1,
+                stop_sequences=['}'],  # Stop exactly at the end of JSON
+                temperature=0.1,  # Make it predictable
+            )
         )
+
+        if not response.text:
+            return None
+
+        # Add the closing bracket if Gemini cut it off (common with rate limits)
+        text = response.text.strip()
+        if text.startswith("{") and not text.endswith("}"):
+            text += '}'
+
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+
     except Exception as e:
-        logger.error(f"Gemini API call failed: {e}")
-        raise RuntimeError(f"AI service unavailable: {e}")
-
-    raw_text = response.text
-    logger.info(f"Gemini raw response: {raw_text}")
-
-    data = parse_json_safely(raw_text)
-    if data is None:
-        logger.error(f"Could not parse JSON from Gemini response: {raw_text}")
-        raise ValueError(f"AI returned non-JSON response: {raw_text[:200]}")
-
-    return validate_extraction(data)
+        if "429" in str(e):
+            raise RuntimeError("Rate limit hit. Slow down!")
+        raise e
