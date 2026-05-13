@@ -12,6 +12,11 @@ from app.core.config import settings
 from app.models import Base, Product, TransactionLog
 from app.services.ai_agent import extract_inventory_action
 
+from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse
+
+
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -56,6 +61,16 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+templates = Jinja2Templates(directory="templates")
+@app.get("/", response_class=HTMLResponse)
+async def read_dashboard(request: Request, db: Session = Depends(get_db)):
+    products = db.query(Product).order_by(Product.name).all()
+    # Logic: TemplateResponse handles the "translation" of {% %} into HTML
+    return templates.TemplateResponse(
+        "index.html",
+        {"request": request, "products": products}
+    )
 
 
 def process_inventory_action(
