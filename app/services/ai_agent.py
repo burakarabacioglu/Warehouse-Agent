@@ -39,3 +39,43 @@ Transcript: "bugün 50 çuval buğday aldık" → {"product_name": "wheat", "qua
 Transcript: "we sold 200 kg of corn today" → {"product_name": "corn", "quantity_change": -200.0, "unit": "kg"}
 Transcript: "uh... like 30 liters of milk came in this morning" → {"product_name": "milk", "quantity_change": 30.0, "unit": "liters"}
 """
+
+
+def parse_json_safely(text: str) -> Optional[dict]:
+    """Robustly extract JSON from model output, even if wrapped in markdown."""
+    # Strip markdown code fences if present
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    text = text.strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Try to find a JSON object anywhere in the text
+        match = re.search(r"\{.*?\}", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+    return None
+
+
+def validate_extraction(data: dict) -> dict:
+    """Validate and coerce extracted fields to correct types."""
+    if not isinstance(data.get("product_name"), str) or not data["product_name"].strip():
+        raise ValueError("Missing or invalid product_name")
+
+    try:
+        data["quantity_change"] = float(data["quantity_change"])
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid quantity_change: {data.get('quantity_change')}")
+
+    if not isinstance(data.get("unit"), str) or not data["unit"].strip():
+        data["unit"] = "units"  # Safe fallback
+
+    data["product_name"] = data["product_name"].strip().lower()
+    data["unit"] = data["unit"].strip().lower()
+
+    return data
