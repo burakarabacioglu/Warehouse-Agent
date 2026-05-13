@@ -7,7 +7,7 @@ import time
 st.set_page_config(page_title="Agri-Flow Dashboard", page_icon="🌱", layout="wide")
 
 # Static Header (Always visible)
-st.title("🌱 Agri-Flow Live Warehouse Agent")
+st.title("Agri-Flow Live Warehouse Agent")
 st.markdown("### Real-time WhatsApp Inventory Management")
 
 # --- 2. SIDEBAR ---
