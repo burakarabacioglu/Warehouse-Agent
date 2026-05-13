@@ -59,3 +59,60 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# ---------------------------------------------------------------------------
+# Helper: upsert product and log transaction
+# ---------------------------------------------------------------------------
+def process_inventory_action(
+    db: Session,
+    product_name: str,
+    quantity_change: float,
+    unit: str,
+    transcript: str,
+    from_number: Optional[str] = None,
+) -> dict:
+    """
+    Upsert a product and record a transaction log.
+    Returns a summary dict for the API response.
+    """
+    product = db.query(Product).filter(Product.name == product_name).first()
+
+    if product is None:
+        # New product — quantity starts at the change value (can't go below 0 on first entry)
+        initial_quantity = max(quantity_change, 0.0)
+        product = Product(
+            name=product_name,
+            quantity=initial_quantity,
+            unit=unit,
+        )
+        db.add(product)
+        db.flush()  # Get the ID before committing
+        action = "created"
+        logger.info(f"New product created: {product_name} ({initial_quantity} {unit})")
+    else:
+        # Existing product — update quantity, protect against going below 0
+        new_quantity = max(product.quantity + quantity_change, 0.0)
+        product.quantity = new_quantity
+        product.unit = unit  # Allow unit correction via transcript
+        product.updated_at = datetime.utcnow()
+        action = "updated"
+        logger.info(f"Product updated: {product_name} → {new_quantity} {unit}")
+
+    # Always log the transaction
+    log_entry = TransactionLog(
+        product_id=product.id,
+        quantity_change=quantity_change,
+        original_transcript=transcript,
+        from_number=from_number,
+    )
+    db.add(log_entry)
+    db.commit()
+    db.refresh(product)
+
+    return {
+        "action": action,
+        "product_name": product.name,
+        "new_quantity": product.quantity,
+        "unit": product.unit,
+        "quantity_change": quantity_change,
+    }
