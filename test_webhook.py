@@ -60,3 +60,83 @@ TEST_CASES = [
     ),
 ]
 
+
+def send_message(base_url: str, transcript: str, from_number: str) -> requests.Response:
+    """POST to the webhook with form-encoded body mimicking Twilio."""
+    return requests.post(
+        f"{base_url}{WEBHOOK_PATH}",
+        data={
+            "Body": transcript,
+            "From": f"whatsapp:{from_number}",
+        },
+        timeout=30,
+    )
+
+
+def run_tests(base_url: str, single_message: str | None = None):
+    sep = "─" * 60
+
+    if single_message:
+        cases = [("Custom", single_message, "+0000000000")]
+    else:
+        cases = TEST_CASES
+
+    print(f"\n🌱  Agri-Flow Webhook Test Suite")
+    print(f"   Target: {base_url}{WEBHOOK_PATH}\n")
+
+    passed = 0
+    failed = 0
+
+    for label, transcript, phone in cases:
+        print(sep)
+        print(f"📋 Test : {label}")
+        print(f"📞 From : {phone}")
+        print(f"🎙️  Input: {transcript}")
+
+        try:
+            resp = send_message(base_url, transcript, phone)
+            status_icon = "✅" if resp.status_code == 200 else "❌"
+            print(f"{status_icon} Status: {resp.status_code}")
+            print(f"💬 Reply :\n{resp.text}")
+            if resp.status_code == 200:
+                passed += 1
+            else:
+                failed += 1
+        except requests.exceptions.ConnectionError:
+            print("❌ ERROR: Could not connect. Is the server running?")
+            print(f"   Run: uvicorn app.main:app --reload")
+            failed += 1
+        except Exception as e:
+            print(f"❌ ERROR: {e}")
+            failed += 1
+
+        print()
+
+    print(sep)
+    print(f"Results: {passed} passed, {failed} failed out of {len(cases)} tests")
+
+    # Print inventory snapshot after all tests
+    if not single_message:
+        print("\n📦 Current Inventory Snapshot:")
+        try:
+            inv = requests.get(f"{base_url}/inventory", timeout=10).json()
+            if inv:
+                for item in inv:
+                    print(f"   • {item['name'].title():20s} {item['quantity']:>8.1f} {item['unit']}")
+            else:
+                print("   (empty)")
+        except Exception as e:
+            print(f"   Could not fetch inventory: {e}")
+
+    print()
+    return failed == 0
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Agri-Flow webhook tester")
+    parser.add_argument("--url", default=BASE_URL, help="Base URL of the FastAPI server")
+    parser.add_argument("--message", default=None, help="Single custom message to test")
+    args = parser.parse_args()
+
+    success = run_tests(args.url, args.message)
+    sys.exit(0 if success else 1)
