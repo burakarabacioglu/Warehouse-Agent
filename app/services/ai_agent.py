@@ -79,3 +79,39 @@ def validate_extraction(data: dict) -> dict:
     data["unit"] = data["unit"].strip().lower()
 
     return data
+
+
+def extract_inventory_action(transcript: str) -> dict:
+    """
+    Send transcript to Gemini and extract structured inventory action.
+    Returns dict with: product_name, quantity_change, unit
+    Raises ValueError if extraction fails.
+    """
+    if not transcript or not transcript.strip():
+        raise ValueError("Empty transcript provided")
+
+    prompt = f"{SYSTEM_PROMPT}\n\nTranscript: \"{transcript.strip()}\""
+
+    logger.info(f"Sending transcript to Gemini: {transcript[:100]}...")
+
+    try:
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.1,  # Low temp for deterministic JSON output
+                max_output_tokens=256,  # JSON is small; cap tokens
+            ),
+        )
+    except Exception as e:
+        logger.error(f"Gemini API call failed: {e}")
+        raise RuntimeError(f"AI service unavailable: {e}")
+
+    raw_text = response.text
+    logger.info(f"Gemini raw response: {raw_text}")
+
+    data = parse_json_safely(raw_text)
+    if data is None:
+        logger.error(f"Could not parse JSON from Gemini response: {raw_text}")
+        raise ValueError(f"AI returned non-JSON response: {raw_text[:200]}")
+
+    return validate_extraction(data)
